@@ -1,0 +1,27 @@
+# Ansible
+*.retry
+.ansible/
+ansible_facts/
+
+# Python (collections / venv)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets
+.vault_pass
+*.pem
+*.key
+.env
+.env.*
+
+# Logs / temp
+*.log
+/tmp/
+
+# OS / editor
+.DS_Store
+.idea/
+*.swp
+*.swo
