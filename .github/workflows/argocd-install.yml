@@ -1,0 +1,55 @@
+name: Install ArgoCD
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'Cluster name'
+        required: true
+        default: 'dev.cluster.example.internal'
+      environment:
+        description: 'Environment label'
+        required: true
+        default: 'dev'
+
+jobs:
+  install-argocd:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: |
+          pip install ansible-core
+          ansible-galaxy collection install -r requirements.yml
+          curl -Lo kops https://github.com/kubernetes/kops/releases/download/v1.28.0/kops-linux-amd64
+          chmod +x kops && sudo mv kops /usr/local/bin/
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Download IAM outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs-iam-${{ inputs.environment }}
+          path: /tmp/tf-iam
+
+      - name: Install ArgoCD and bootstrap root app
+        env:
+          CLUSTER_NAME: ${{ inputs.cluster_name }}
+          KOPS_STATE_STORE: s3://${{ inputs.cluster_name }}-state
+          GITOPS_REPO_URL: https://github.com/rattandevesh/gitops.git
+          ROOT_APP_MANIFEST: https://raw.githubusercontent.com/rattandevesh/gitops/main/apps/root/${{ inputs.environment }}-root-application.yaml
+        run: |
+          export ARGOCD_REPO_SERVER_ROLE_ARN=$(jq -r '.argocd_repo_server_role_arn.value' /tmp/tf-iam/outputs.json)
+          ansible-playbook argocd-install.yml

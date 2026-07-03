@@ -1,0 +1,79 @@
+name: Create Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (dev, stage, prod)'
+        required: true
+        default: 'dev'
+      cluster_name:
+        description: 'Cluster name'
+        required: true
+        default: 'dev.cluster.example.internal'
+
+jobs:
+  create-cluster:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible and collections
+        run: |
+          pip install ansible-core
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Download Terraform foundations outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs-${{ inputs.environment }}
+          path: /tmp/tf-foundations
+
+      - name: Download Terraform IAM outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs-iam-${{ inputs.environment }}
+          path: /tmp/tf-iam
+        continue-on-error: true
+
+      - name: Set environment variables
+        run: |
+          F=/tmp/tf-foundations/outputs.json
+          I=/tmp/tf-iam/outputs.json
+          echo "ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
+          echo "CLUSTER_NAME=${{ inputs.cluster_name }}" >> $GITHUB_ENV
+          echo "AWS_REGION=${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}" >> $GITHUB_ENV
+          echo "VPC_ID=$(jq -r '.vpc_id.value' $F)" >> $GITHUB_ENV
+          echo "PRIVATE_SUBNET_IDS=$(jq -r '.private_subnet_ids.value | join(",")' $F)" >> $GITHUB_ENV
+          echo "PUBLIC_SUBNET_IDS=$(jq -r '.public_subnet_ids.value | join(",")' $F)" >> $GITHUB_ENV
+          echo "HOSTED_ZONE_ID=$(jq -r '.hosted_zone_id.value' $F)" >> $GITHUB_ENV
+          echo "KMS_KEY_ARN=$(jq -r '.kms_key_arn.value' $F)" >> $GITHUB_ENV
+          if [ -f "$I" ]; then
+            echo "NODE_INSTANCE_PROFILE_NAME=$(jq -r '.node_instance_profile_name.value' $I)" >> $GITHUB_ENV
+          fi
+
+      - name: Install kOps and kubectl
+        run: |
+          curl -Lo kops https://github.com/kubernetes/kops/releases/download/v1.28.0/kops-linux-amd64
+          chmod +x kops && sudo mv kops /usr/local/bin/
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Generate SSH key for bastion
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
+
+      - name: Run cluster-create playbook
+        run: ansible-playbook cluster-create.yml

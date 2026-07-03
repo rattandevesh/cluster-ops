@@ -1,27 +1,37 @@
 ---
 - name: Create kOps Cluster
   hosts: localhost
+  gather_facts: false
   vars:
     environment: "{{ lookup('env', 'ENVIRONMENT') | default('dev', true) }}"
     cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('dev.cluster.example.internal', true) }}"
-    region: "us-west-2"
-    k8s_version: "1.28.0"
-    # These should come from Terraform outputs
+    region: "{{ lookup('env', 'AWS_REGION') | default('us-west-2', true) }}"
+    # Pinned: 1.28.x is stable and supported by cert-manager, NGINX ingress, and metrics-server
+    k8s_version: "{{ lookup('env', 'K8S_VERSION') | default('1.28.0', true) }}"
     vpc_id: "{{ lookup('env', 'VPC_ID') }}"
     private_subnet_ids: "{{ lookup('env', 'PRIVATE_SUBNET_IDS').split(',') }}"
     public_subnet_ids: "{{ lookup('env', 'PUBLIC_SUBNET_IDS').split(',') }}"
     hosted_zone_id: "{{ lookup('env', 'HOSTED_ZONE_ID') }}"
     kms_key_arn: "{{ lookup('env', 'KMS_KEY_ARN') }}"
-    node_instance_profile: "{{ lookup('env', 'NODE_INSTANCE_PROFILE_ARN') }}"
+    node_instance_profile: "{{ lookup('env', 'NODE_INSTANCE_PROFILE_NAME') | default(lookup('env', 'NODE_INSTANCE_PROFILE_ARN') | default('', true), true) }}"
 
   tasks:
+    - name: Validate required Terraform inputs
+      assert:
+        that:
+          - vpc_id | length > 0
+          - hosted_zone_id | length > 0
+          - kms_key_arn | length > 0
+          - node_instance_profile | length > 0
+        fail_msg: "Set VPC_ID, HOSTED_ZONE_ID, KMS_KEY_ARN, and NODE_INSTANCE_PROFILE_NAME from Terraform iam/ outputs"
+
     - name: Create kOps state bucket
       command: >
         aws s3api create-bucket
         --bucket {{ cluster_name }}-state
         --region {{ region }}
         --create-bucket-configuration LocationConstraint={{ region }}
-      ignore_errors: yes
+      ignore_errors: true
 
     - name: Export KOPS_STATE_STORE
       set_fact:
@@ -32,7 +42,7 @@
         kops create cluster
         --name={{ cluster_name }}
         --state={{ kops_state_store }}
-        --zones=us-west-2a,us-west-2b,us-west-2c
+        --zones={{ region }}a,{{ region }}b,{{ region }}c
         --node-count=3
         --node-size=t3.medium
         --master-size=t3.medium
@@ -46,7 +56,6 @@
         --utility-subnets={{ public_subnet_ids | join(',') }}
         --dns-zone={{ hosted_zone_id }}
         --kubernetes-version={{ k8s_version }}
-        --encryption={{ kms_key_arn }}
         --node-instance-profile={{ node_instance_profile }}
         --dry-run
         -o yaml
@@ -62,12 +71,32 @@
         kops create -f /tmp/{{ cluster_name }}.yaml
         --state={{ kops_state_store }}
 
-    - name: Create cluster secret
+    - name: Create spot instance group manifest
+      copy:
+        dest: "/tmp/{{ cluster_name }}-spot-ig.yaml"
+        content: |
+          apiVersion: kops.k8s.io/v1alpha2
+          kind: InstanceGroup
+          metadata:
+            name: spot-nodes
+            labels:
+              kops.k8s.io/cluster: {{ cluster_name }}
+          spec:
+            role: Node
+            minSize: 1
+            maxSize: 6
+            machineType: t3.medium
+            maxPrice: "0.05"
+            subnets:
+          {% for subnet in private_subnet_ids %}
+              - {{ subnet }}
+          {% endfor %}
+
+    - name: Apply spot instance group
       command: >
-        kops create secret
-        --name={{ cluster_name }}
+        kops create -f /tmp/{{ cluster_name }}-spot-ig.yaml
         --state={{ kops_state_store }}
-        ssh-publickey admin -i ~/.ssh/id_rsa.pub
+      ignore_errors: true
 
     - name: Update cluster
       command: >
@@ -76,9 +105,38 @@
         --state={{ kops_state_store }}
         --yes
 
+    - name: Rolling update cluster
+      command: >
+        kops rolling-update cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --yes
+      ignore_errors: true
+
     - name: Wait for cluster to be ready
       command: >
         kops validate cluster
         --name={{ cluster_name }}
         --state={{ kops_state_store }}
-        --wait 10m
+        --wait 15m
+
+    - name: Export kubeconfig
+      command: >
+        kops export kubecfg
+        --name={{ cluster_name }}
+        --admin
+
+    - name: Print OIDC issuer URL for Terraform IAM stack
+      command: >
+        kops get cluster {{ cluster_name }}
+        --state={{ kops_state_store }}
+        -o json
+      register: cluster_info
+
+    - name: Show next steps
+      debug:
+        msg: |
+          Cluster ready. Get OIDC issuer and apply iam/ stack:
+            kops get cluster {{ cluster_name }} --state={{ kops_state_store }} -o yaml | grep -A2 serviceAccountIssuerDiscovery
+            export OIDC_ISSUER=https://{{ cluster_name }}
+            cd infra-live/{{ environment }}/iam && OIDC_ISSUER=$OIDC_ISSUER make init plan apply

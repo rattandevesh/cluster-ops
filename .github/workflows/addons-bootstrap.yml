@@ -1,0 +1,72 @@
+name: Bootstrap Addons
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (dev, stage, prod)'
+        required: true
+        default: 'dev'
+      cluster_name:
+        description: 'Cluster name'
+        required: true
+        default: 'dev.cluster.example.internal'
+
+jobs:
+  bootstrap-addons:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible and collections
+        run: |
+          pip install ansible-core
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Install kOps, kubectl, Helm
+        run: |
+          curl -Lo kops https://github.com/kubernetes/kops/releases/download/v1.28.0/kops-linux-amd64
+          chmod +x kops && sudo mv kops /usr/local/bin/
+          curl -LO "https://dl.k8s.io/release/v1.28.0/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Download Terraform IAM outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs-iam-${{ inputs.environment }}
+          path: /tmp/tf-iam
+
+      - name: Download Terraform foundations outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs-${{ inputs.environment }}
+          path: /tmp/tf-foundations
+
+      - name: Set environment variables
+        run: |
+          F=/tmp/tf-foundations/outputs.json
+          I=/tmp/tf-iam/outputs.json
+          echo "ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
+          echo "CLUSTER_NAME=${{ inputs.cluster_name }}" >> $GITHUB_ENV
+          echo "AWS_REGION=${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}" >> $GITHUB_ENV
+          echo "KOPS_STATE_STORE=s3://${{ inputs.cluster_name }}-state" >> $GITHUB_ENV
+          echo "VPC_ID=$(jq -r '.vpc_id.value' $F)" >> $GITHUB_ENV
+          echo "HOSTED_ZONE_ID=$(jq -r '.hosted_zone_id.value' $F)" >> $GITHUB_ENV
+          echo "EXTERNAL_DNS_ROLE_ARN=$(jq -r '.external_dns_role_arn.value' $I)" >> $GITHUB_ENV
+          echo "CERT_MANAGER_ROLE_ARN=$(jq -r '.cert_manager_role_arn.value' $I)" >> $GITHUB_ENV
+          echo "CLUSTER_AUTOSCALER_ROLE_ARN=$(jq -r '.cluster_autoscaler_role_arn.value' $I)" >> $GITHUB_ENV
+
+      - name: Run addons-bootstrap playbook
+        run: ansible-playbook addons-bootstrap.yml

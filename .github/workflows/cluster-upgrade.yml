@@ -1,0 +1,54 @@
+name: Upgrade Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (dev, stage, prod)'
+        required: true
+        default: 'dev'
+      cluster_name:
+        description: 'Cluster name'
+        required: true
+        default: 'dev.cluster.example.internal'
+      kubernetes_version:
+        description: 'Kubernetes version to upgrade to'
+        required: true
+        default: '1.28.0'
+
+jobs:
+  upgrade-cluster:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible
+        run: |
+          pip install ansible-core
+
+      - name: Install kOps
+        run: |
+          curl -Lo kops https://github.com/kubernetes/kops/releases/download/v1.28.0/kops-darwin-amd64
+          chmod +x kops
+          sudo mv kops /usr/local/bin/
+
+      - name: Run Ansible Playbook
+        run: |
+          ansible-playbook cluster-upgrade.yml \
+            -e "environment=${{ inputs.environment }}" \
+            -e "cluster_name=${{ inputs.cluster_name }}" \
+            -e "kubernetes_version=${{ inputs.kubernetes_version }}"

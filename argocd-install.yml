@@ -1,0 +1,76 @@
+---
+- name: Install ArgoCD
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('dev.cluster.example.internal', true) }}"
+    gitops_repo_url: "{{ lookup('env', 'GITOPS_REPO_URL') | default('https://github.com/rattandevesh/gitops.git', true) }}"
+    argocd_repo_server_role_arn: "{{ lookup('env', 'ARGOCD_REPO_SERVER_ROLE_ARN') | default('', true) }}"
+    irsa_annotation: "eks.amazonaws.com/role-arn"
+
+  tasks:
+    - name: Configure kubectl context
+      command: >
+        kops export kubecfg
+        --name={{ cluster_name }}
+        --admin
+
+    - name: Add Argo Helm repo
+      command: helm repo add argo https://argoproj.github.io/argo-helm
+      ignore_errors: true
+
+    - name: Update Helm repos
+      command: helm repo update
+
+    - name: Create ArgoCD repo-server ServiceAccount with IRSA
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: argocd-repo-server
+            namespace: argocd
+            annotations:
+              eks.amazonaws.com/role-arn: "{{ argocd_repo_server_role_arn }}"
+      when: argocd_repo_server_role_arn | length > 0
+
+    - name: Install ArgoCD
+      command: >
+        helm upgrade --install argocd argo/argo-cd
+        --namespace argocd
+        --create-namespace
+        --set server.service.type=LoadBalancer
+        --set configs.params."server\.insecure"=true
+        --set repoServer.serviceAccount.create=false
+        --set repoServer.serviceAccount.name=argocd-repo-server
+      when: argocd_repo_server_role_arn | length > 0
+
+    - name: Install ArgoCD without IRSA override
+      command: >
+        helm upgrade --install argocd argo/argo-cd
+        --namespace argocd
+        --create-namespace
+        --set server.service.type=LoadBalancer
+        --set configs.params."server\.insecure"=true
+      when: argocd_repo_server_role_arn | length == 0
+
+    - name: Wait for ArgoCD server
+      command: kubectl rollout status deployment/argocd-server -n argocd --timeout=300s
+
+    - name: Apply root Application
+      command: >
+        kubectl apply -f {{ lookup('env', 'ROOT_APP_MANIFEST') | default('https://raw.githubusercontent.com/rattandevesh/gitops/main/apps/root/dev-root-application.yaml', true) }}
+
+    - name: Show ArgoCD admin password
+      command: >
+        kubectl -n argocd get secret argocd-initial-admin-secret
+        -o jsonpath="{.data.password}" | base64 -d
+      register: argocd_password
+      ignore_errors: true
+
+    - name: Print access info
+      debug:
+        msg: |
+          ArgoCD installed. Get LB hostname: kubectl get svc argocd-server -n argocd
+          Admin password: {{ argocd_password.stdout | default('run: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d') }}
