@@ -1,0 +1,47 @@
+---
+- name: Upgrade kOps Cluster
+  hosts: localhost
+  vars:
+    environment: "{{ lookup('env', 'ENVIRONMENT') | default('dev', true) }}"
+    cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('dev.cluster.example.internal', true) }}"
+    target_k8s_version: "1.28.1"
+
+  tasks:
+    - name: Export KOPS_STATE_STORE
+      set_fact:
+        kops_state_store: "s3://{{ cluster_name }}-state"
+
+    - name: Check current cluster version
+      command: >
+        kops get cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        -o yaml
+      register: current_cluster
+
+    - name: Display current version
+      debug:
+        msg: "Current Kubernetes version: {{ current_cluster.stdout }}"
+
+    - name: Update cluster version
+      command: >
+        kops update cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --kubernetes-version={{ target_k8s_version }}
+        --yes
+
+    - name: Rolling upgrade cluster
+      command: >
+        kops rolling-update cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --yes
+        --force
+
+    - name: Validate cluster after upgrade
+      command: >
+        kops validate cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --wait 15m

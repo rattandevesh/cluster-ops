@@ -1,0 +1,68 @@
+---
+- name: Install Kubernetes and kOps Tools
+  hosts: localhost
+  become: true
+  vars:
+    kops_version: "1.28.0"
+    kubectl_version: "1.28.0"
+    helm_version: "3.13.0"
+    argocd_version: "2.8.0"
+
+  tasks:
+    - name: Install prerequisites
+      package:
+        name:
+          - curl
+          - wget
+          - unzip
+          - git
+        state: present
+
+    - name: Download kOps
+      get_url:
+        url: "https://github.com/kubernetes/kops/releases/download/v{{ kops_version }}/kops-linux-amd64"
+        dest: /usr/local/bin/kops
+        mode: '0755'
+
+    - name: Download kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/v{{ kubectl_version }}/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
+    - name: Download Helm
+      get_url:
+        url: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz"
+        dest: /tmp/helm.tar.gz
+
+    - name: Extract Helm
+      unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /tmp
+        remote_src: yes
+
+    - name: Install Helm
+      copy:
+        src: /tmp/linux-amd64/helm
+        dest: /usr/local/bin/helm
+        mode: '0755'
+
+    - name: Download ArgoCD CLI
+      get_url:
+        url: "https://github.com/argoproj/argo-cd/releases/download/v{{ argocd_version }}/argocd-linux-amd64"
+        dest: /usr/local/bin/argocd
+        mode: '0755'
+
+    - name: Verify installations
+      command: "{{ item }} version --client"
+      loop:
+        - kops
+        - kubectl
+        - helm
+        - argocd
+      register: tool_versions
+
+    - name: Display tool versions
+      debug:
+        msg: "{{ item.stdout_lines[0] }}"
+      loop: "{{ tool_versions.results }}"

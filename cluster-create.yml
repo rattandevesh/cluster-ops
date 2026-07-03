@@ -1,0 +1,84 @@
+---
+- name: Create kOps Cluster
+  hosts: localhost
+  vars:
+    environment: "{{ lookup('env', 'ENVIRONMENT') | default('dev', true) }}"
+    cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('dev.cluster.example.internal', true) }}"
+    region: "us-west-2"
+    k8s_version: "1.28.0"
+    # These should come from Terraform outputs
+    vpc_id: "{{ lookup('env', 'VPC_ID') }}"
+    private_subnet_ids: "{{ lookup('env', 'PRIVATE_SUBNET_IDS').split(',') }}"
+    public_subnet_ids: "{{ lookup('env', 'PUBLIC_SUBNET_IDS').split(',') }}"
+    hosted_zone_id: "{{ lookup('env', 'HOSTED_ZONE_ID') }}"
+    kms_key_arn: "{{ lookup('env', 'KMS_KEY_ARN') }}"
+    node_instance_profile: "{{ lookup('env', 'NODE_INSTANCE_PROFILE_ARN') }}"
+
+  tasks:
+    - name: Create kOps state bucket
+      command: >
+        aws s3api create-bucket
+        --bucket {{ cluster_name }}-state
+        --region {{ region }}
+        --create-bucket-configuration LocationConstraint={{ region }}
+      ignore_errors: yes
+
+    - name: Export KOPS_STATE_STORE
+      set_fact:
+        kops_state_store: "s3://{{ cluster_name }}-state"
+
+    - name: Generate kOps cluster manifest
+      command: >
+        kops create cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --zones=us-west-2a,us-west-2b,us-west-2c
+        --node-count=3
+        --node-size=t3.medium
+        --master-size=t3.medium
+        --master-count=3
+        --networking=calico
+        --topology=private
+        --bastion
+        --cloud=aws
+        --vpc={{ vpc_id }}
+        --subnets={{ private_subnet_ids | join(',') }}
+        --utility-subnets={{ public_subnet_ids | join(',') }}
+        --dns-zone={{ hosted_zone_id }}
+        --kubernetes-version={{ k8s_version }}
+        --encryption={{ kms_key_arn }}
+        --node-instance-profile={{ node_instance_profile }}
+        --dry-run
+        -o yaml
+      register: cluster_manifest
+
+    - name: Write cluster manifest to file
+      copy:
+        content: "{{ cluster_manifest.stdout }}"
+        dest: "/tmp/{{ cluster_name }}.yaml"
+
+    - name: Apply cluster manifest
+      command: >
+        kops create -f /tmp/{{ cluster_name }}.yaml
+        --state={{ kops_state_store }}
+
+    - name: Create cluster secret
+      command: >
+        kops create secret
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        ssh-publickey admin -i ~/.ssh/id_rsa.pub
+
+    - name: Update cluster
+      command: >
+        kops update cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --yes
+
+    - name: Wait for cluster to be ready
+      command: >
+        kops validate cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --wait 10m

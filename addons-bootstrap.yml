@@ -1,0 +1,171 @@
+---
+- name: Bootstrap Cluster Add-ons
+  hosts: localhost
+  vars:
+    environment: "{{ lookup('env', 'ENVIRONMENT') | default('dev', true) }}"
+    cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('dev.cluster.example.internal', true) }}"
+    oidc_issuer: "{{ lookup('env', 'OIDC_ISSUER') }}"
+    external_dns_role_arn: "{{ lookup('env', 'EXTERNAL_DNS_ROLE_ARN') }}"
+    cert_manager_role_arn: "{{ lookup('env', 'CERT_MANAGER_ROLE_ARN') }}"
+    cluster_autoscaler_role_arn: "{{ lookup('env', 'CLUSTER_AUTOSCALER_ROLE_ARN') }}"
+
+  tasks:
+    - name: Configure kubectl context
+      command: >
+        kops export kubecfg
+        --name={{ cluster_name }}
+        --admin
+
+    - name: Add Helm repositories
+      command: >
+        helm repo add {{ item.name }} {{ item.url }}
+      loop:
+        - { name: metrics-server, url: https://kubernetes-sigs.github.io/metrics-server/ }
+        - { name: ingress-nginx, url: https://kubernetes.github.io/ingress-nginx }
+        - { name: jetstack, url: https://charts.jetstack.io }
+        - { name: external-secrets, url: https://external-secrets.io/charts }
+
+    - name: Update Helm repositories
+      command: helm repo update
+
+    - name: Install Metrics Server
+      command: >
+        helm upgrade --install metrics-server metrics-server/metrics-server
+        --namespace kube-system
+        --set args[0]=--kubelet-insecure-tls
+
+    - name: Create Cluster Autoscaler Service Account with IRSA
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: cluster-autoscaler
+            namespace: kube-system
+            annotations:
+              eks.amazonaws.com/role-arn: "{{ cluster_autoscaler_role_arn }}"
+
+    - name: Install Cluster Autoscaler
+      command: >
+        helm upgrade --install cluster-autoscaler
+        https://kubernetes.github.io/autoscaler/cluster-autoscaler
+        --namespace kube-system
+        --set cloudProvider=aws
+        --set autoDiscovery.clusterName={{ cluster_name }}
+        --set awsRegion=us-west-2
+
+    - name: Create External DNS Service Account with IRSA
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: external-dns
+            namespace: kube-system
+            annotations:
+              eks.amazonaws.com/role-arn: "{{ external_dns_role_arn }}"
+
+    - name: Install External DNS
+      command: >
+        helm upgrade --install external-dns bitnami/external-dns
+        --namespace kube-system
+        --set provider=aws
+        --set aws.zoneType=public
+        --set domainFilters[0]={{ cluster_name }}
+        --set txtOwnerId={{ cluster_name }}
+
+    - name: Install NGINX Ingress Controller
+      command: >
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx
+        --namespace ingress-nginx
+        --create-namespace
+        --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"=nlb
+
+    - name: Create cert-manager namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: cert-manager
+
+    - name: Create Cert Manager Service Account with IRSA
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: cert-manager
+            namespace: cert-manager
+            annotations:
+              eks.amazonaws.com/role-arn: "{{ cert_manager_role_arn }}"
+
+    - name: Install CRDs for cert-manager
+      command: >
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.crds.yaml
+
+    - name: Install cert-manager
+      command: >
+        helm upgrade --install cert-manager jetstack/cert-manager
+        --namespace cert-manager
+        --set installCRDs=false
+        --version v1.13.0
+
+    - name: Create Staging ClusterIssuer
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-staging
+          spec:
+            acme:
+              server: https://acme-staging-v02.api.letsencrypt.org/directory
+              email: admin@example.com
+              privateKeySecretRef:
+                name: letsencrypt-staging
+              solvers:
+                - dns01:
+                    route53:
+                      region: us-west-2
+                      hostedZoneID: "{{ lookup('env', 'HOSTED_ZONE_ID') }}"
+
+    - name: Create Production ClusterIssuer
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: letsencrypt-prod
+          spec:
+            acme:
+              server: https://acme-v02.api.letsencrypt.org/directory
+              email: admin@example.com
+              privateKeySecretRef:
+                name: letsencrypt-prod
+              solvers:
+                - dns01:
+                    route53:
+                      region: us-west-2
+                      hostedZoneID: "{{ lookup('env', 'HOSTED_ZONE_ID') }}"
+
+    - name: Install External Secrets Operator
+      command: >
+        helm upgrade --install external-secrets external-secrets/external-secrets
+        --namespace external-secrets
+        --create-namespace
+
+    - name: Verify add-ons
+      command: >
+        kubectl get pods -A
+      register: pods
+
+    - name: Display pod status
+      debug:
+        msg: "{{ pods.stdout_lines }}"

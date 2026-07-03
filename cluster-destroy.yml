@@ -1,0 +1,27 @@
+---
+- name: Destroy kOps Cluster
+  hosts: localhost
+  vars:
+    environment: "{{ lookup('env', 'ENVIRONMENT') | default('dev', true) }}"
+    cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('dev.cluster.example.internal', true) }}"
+
+  tasks:
+    - name: Export KOPS_STATE_STORE
+      set_fact:
+        kops_state_store: "s3://{{ cluster_name }}-state"
+
+    - name: Delete cluster
+      command: >
+        kops delete cluster
+        --name={{ cluster_name }}
+        --state={{ kops_state_store }}
+        --yes
+
+    - name: Delete kOps state bucket
+      command: >
+        aws s3 rb {{ kops_state_store }} --force
+      ignore_errors: yes
+
+    - name: Confirm deletion
+      debug:
+        msg: "Cluster {{ cluster_name }} has been destroyed"
