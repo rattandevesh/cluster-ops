@@ -23,7 +23,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}
 
       - uses: actions/setup-python@v5
         with:
@@ -53,7 +53,7 @@ jobs:
           I=/tmp/tf-iam/outputs.json
           echo "ENVIRONMENT=${{ inputs.environment }}" >> $GITHUB_ENV
           echo "CLUSTER_NAME=${{ inputs.cluster_name }}" >> $GITHUB_ENV
-          echo "AWS_REGION=${{ secrets.AWS_DEFAULT_REGION || 'us-west-2' }}" >> $GITHUB_ENV
+          echo "AWS_REGION=${{ secrets.AWS_DEFAULT_REGION || 'us-east-1' }}" >> $GITHUB_ENV
           echo "VPC_ID=$(jq -r '.vpc_id.value' $F)" >> $GITHUB_ENV
           echo "PRIVATE_SUBNET_IDS=$(jq -r '.private_subnet_ids.value | join(",")' $F)" >> $GITHUB_ENV
           echo "PUBLIC_SUBNET_IDS=$(jq -r '.public_subnet_ids.value | join(",")' $F)" >> $GITHUB_ENV

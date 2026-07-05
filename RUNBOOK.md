@@ -34,7 +34,7 @@ export VPC_ID=vpc-xxxxxxxx
 export PRIVATE_SUBNET_IDS=subnet-xxx,subnet-yyy,subnet-zzz
 export PUBLIC_SUBNET_IDS=subnet-aaa,subnet-bbb,subnet-ccc
 export HOSTED_ZONE_ID=Zxxxxxxxx
-export KMS_KEY_ARN=arn:aws:kms:us-west-2:xxx:key/yyy
+export KMS_KEY_ARN=arn:aws:kms:us-east-1:xxx:key/yyy
 export NODE_INSTANCE_PROFILE_arn=arn:aws:iam::xxx:instance-profile/yyy
 ```
 
@@ -45,8 +45,8 @@ export NODE_INSTANCE_PROFILE_arn=arn:aws:iam::xxx:instance-profile/yyy
 ```bash
 aws s3api create-bucket \
   --bucket ${CLUSTER_NAME}-state \
-  --region us-west-2 \
-  --create-bucket-configuration LocationConstraint=us-west-2
+  --region us-east-1 \
+  --create-bucket-configuration LocationConstraint=us-east-1
 ```
 
 ### Step 2: Generate Cluster Manifest
@@ -57,7 +57,7 @@ export KOPS_STATE_STORE=s3://${CLUSTER_NAME}-state
 kops create cluster \
   --name=${CLUSTER_NAME} \
   --state=${KOPS_STATE_STORE} \
-  --zones=us-west-2a,us-west-2b,us-west-2c \
+  --zones=us-east-1a,us-east-1b,us-east-1c \
   --node-count=3 \
   --node-size=t3.medium \
   --master-size=t3.medium \

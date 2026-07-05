@@ -5,7 +5,7 @@
   vars:
     environment: "{{ lookup('env', 'ENVIRONMENT') | default('dev', true) }}"
     cluster_name: "{{ lookup('env', 'CLUSTER_NAME') | default('dev.cluster.example.internal', true) }}"
-    region: "{{ lookup('env', 'AWS_REGION') | default('us-west-2', true) }}"
+    region: "{{ lookup('env', 'AWS_REGION') | default('us-east-1', true) }}"
     # Pinned: 1.28.x is stable and supported by cert-manager, NGINX ingress, and metrics-server
     k8s_version: "{{ lookup('env', 'K8S_VERSION') | default('1.28.0', true) }}"
     vpc_id: "{{ lookup('env', 'VPC_ID') }}"
@@ -22,15 +22,16 @@
           - vpc_id | length > 0
           - hosted_zone_id | length > 0
           - kms_key_arn | length > 0
-          - node_instance_profile | length > 0
-        fail_msg: "Set VPC_ID, HOSTED_ZONE_ID, KMS_KEY_ARN, and NODE_INSTANCE_PROFILE_NAME from Terraform iam/ outputs"
+        fail_msg: "Set VPC_ID, HOSTED_ZONE_ID, and KMS_KEY_ARN from Terraform outputs"
 
     - name: Create kOps state bucket
       command: >
         aws s3api create-bucket
         --bucket {{ cluster_name }}-state
         --region {{ region }}
+        {% if region != 'us-east-1' %}
         --create-bucket-configuration LocationConstraint={{ region }}
+        {% endif %}
       ignore_errors: true
 
     - name: Export KOPS_STATE_STORE
@@ -45,18 +46,16 @@
         --zones={{ region }}a,{{ region }}b,{{ region }}c
         --node-count=3
         --node-size=t3.medium
-        --master-size=t3.medium
-        --master-count=3
+        --control-plane-size=t3.medium
+        --control-plane-count=3
         --networking=calico
         --topology=private
         --bastion
         --cloud=aws
-        --vpc={{ vpc_id }}
-        --subnets={{ private_subnet_ids | join(',') }}
-        --utility-subnets={{ public_subnet_ids | join(',') }}
+        --network-id={{ vpc_id }}
         --dns-zone={{ hosted_zone_id }}
         --kubernetes-version={{ k8s_version }}
-        --node-instance-profile={{ node_instance_profile }}
+        --encrypt-etcd-storage
         --dry-run
         -o yaml
       register: cluster_manifest

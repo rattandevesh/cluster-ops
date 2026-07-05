@@ -22,6 +22,15 @@
     - name: Update Helm repos
       command: helm repo update
 
+    - name: Create ArgoCD namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: argocd
+
     - name: Create ArgoCD repo-server ServiceAccount with IRSA
       kubernetes.core.k8s:
         state: present
